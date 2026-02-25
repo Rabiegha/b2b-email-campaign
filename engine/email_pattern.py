@@ -69,31 +69,65 @@ def _guess_pattern_for_email(local: str) -> list[str]:
             if len(a) == 1:
                 patterns.append("p.nom")
             elif len(b) == 1:
-                # could be nom.p -- rare, skip
+                # nom.p -> rare, skip
                 pass
             else:
-                # Could be prenom.nom or nom.prenom -- we assume prenom.nom by default
+                # Could be prenom.nom or nom.prenom
                 patterns.append("prenom.nom")
                 patterns.append("nom.prenom")
     elif "_" in local:
-        patterns.append("prenom_nom")
+        parts = local.split("_")
+        if len(parts) == 2:
+            patterns.append("prenom_nom")
     else:
         # No separator
-        if len(local) <= 2:
-            patterns.append("prenom")
-        elif local[-1:].isalpha() and len(local) > 3:
-            patterns.append("prenomnom")
+        if len(local) <= 1:
+            pass
+        elif len(local) == 2:
             patterns.append("pnom")
-            patterns.append("nomp")
-            patterns.append("prenom")
+        elif len(local) <= 4:
+            patterns.append("pnom")
             patterns.append("nom")
+            patterns.append("prenom")
+        else:
+            # Most likely prenomnom (e.g. jeandupont)
+            patterns.append("prenomnom")
+            # Less likely alternatives
+            patterns.append("pnom")
 
     return patterns if patterns else ["prenomnom"]
 
 
-def infer_pattern(domain: str, emails: list[str], force_refresh: bool = False) -> tuple[str, float, str]:
+def _match_email_to_pattern(email_local: str, known_first: str = None,
+                             known_last: str = None) -> list[str]:
+    """
+    If we know the first/last name of the person, match the email to
+    specific patterns with higher confidence.
+    """
+    if not known_first or not known_last:
+        return _guess_pattern_for_email(email_local)
+
+    f = normalize_name_part(known_first)
+    l = normalize_name_part(known_last)
+    matched = []
+
+    for pname, func in PATTERN_DEFS:
+        try:
+            expected = func(f, l)
+            if expected == email_local:
+                matched.append(pname)
+        except (IndexError, TypeError):
+            continue
+
+    return matched if matched else _guess_pattern_for_email(email_local)
+
+
+def infer_pattern(domain: str, emails: list[str],
+                  known_names: list[tuple[str, str]] | None = None,
+                  force_refresh: bool = False) -> tuple[str, float, str]:
     """
     Given a domain and discovered emails, infer the most likely pattern.
+    known_names: optional list of (firstname, lastname) tuples for exact matching.
 
     Returns: (pattern_name, confidence, debug_info)
     confidence is 0-1.
@@ -107,31 +141,96 @@ def infer_pattern(domain: str, emails: list[str], force_refresh: bool = False) -
 
     if not emails:
         logger.info("No emails to infer pattern for %s", domain)
-        return ("prenom.nom", 0.2, "default fallback, no emails found")
+        # prenom.nom is statistically the most common pattern (~70%)
+        return ("prenom.nom", 0.50, "prenom.nom par défaut (pattern le plus fréquent)")
 
     # Filter to domain
     domain_emails = [e for e in emails if e.endswith(f"@{domain}")]
     if not domain_emails:
-        return ("prenom.nom", 0.2, "no emails match domain")
+        return ("prenom.nom", 0.50, "prenom.nom par défaut (aucun email du domaine trouvé)")
 
-    # Count pattern guesses
+    # Prepare normalised known names for exact matching
+    norm_names = []
+    if known_names:
+        for first, last in known_names:
+            if first and last:
+                norm_names.append((normalize_name_part(first), normalize_name_part(last)))
+
+    # Count pattern guesses – prefer exact name matching when possible
     pattern_votes: Counter = Counter()
+    exact_matches = 0
+    strong_matches = 0
+
     for email in domain_emails:
         local = email.split("@")[0]
-        guesses = _guess_pattern_for_email(local)
-        for g in guesses:
-            pattern_votes[g] += 1
+
+        # --- Try exact matching against known names ---
+        exact_guesses = None
+        if norm_names:
+            for f, l in norm_names:
+                matched = []
+                for pname, func in PATTERN_DEFS:
+                    try:
+                        if func(f, l) == local:
+                            matched.append(pname)
+                    except (IndexError, TypeError):
+                        continue
+                if matched:
+                    exact_guesses = matched
+                    exact_matches += 1
+                    break  # first name-pair that matches is enough
+
+        if exact_guesses:
+            # Exact name match – very strong signal
+            if len(exact_guesses) == 1:
+                pattern_votes[exact_guesses[0]] += 5
+                strong_matches += 1
+            else:
+                for g in exact_guesses:
+                    pattern_votes[g] += 3
+        else:
+            # Fallback to structural guessing
+            guesses = _guess_pattern_for_email(local)
+            if len(guesses) == 1:
+                pattern_votes[guesses[0]] += 3
+                strong_matches += 1
+            elif len(guesses) == 2:
+                for g in guesses:
+                    pattern_votes[g] += 2
+            else:
+                for g in guesses:
+                    pattern_votes[g] += 1
 
     if not pattern_votes:
-        return ("prenom.nom", 0.2, "could not infer")
+        return ("prenom.nom", 0.15, "could not infer")
 
     best_pattern = pattern_votes.most_common(1)[0][0]
-    total_votes = sum(pattern_votes.values())
     best_count = pattern_votes[best_pattern]
-    confidence = round(min(1.0, (best_count / max(total_votes, 1)) * 0.7 + len(domain_emails) * 0.05), 2)
-    confidence = min(confidence, 0.95)
+    total_votes = sum(pattern_votes.values())
 
-    debug = f"votes={dict(pattern_votes)}, emails_found={len(domain_emails)}"
+    # Confidence formula
+    vote_ratio = best_count / max(total_votes, 1)
+
+    # Base: proportion of votes for best pattern (0‑0.45)
+    base = vote_ratio * 0.45
+
+    # Volume bonus: more emails found → more reliable (0‑0.20)
+    email_bonus = min(0.20, len(domain_emails) * 0.12)
+
+    # Exact‑match bonus: matched against real names (0‑0.30)
+    exact_bonus = min(0.30, exact_matches * 0.20)
+
+    # Strong‑match bonus: unambiguous patterns (0‑0.15)
+    strong_bonus = min(0.15, strong_matches * 0.10)
+
+    # Statistical prior: prenom.nom is the most common pattern
+    prior_bonus = 0.10 if best_pattern == "prenom.nom" else 0.0
+
+    confidence = round(min(0.95, base + email_bonus + exact_bonus + strong_bonus + prior_bonus), 2)
+    confidence = max(confidence, 0.35)  # minimum 35% when we have some evidence
+
+    debug = (f"votes={dict(pattern_votes)}, emails_found={len(domain_emails)}, "
+             f"exact={exact_matches}, strong={strong_matches}")
     logger.info("Pattern for %s: %s (confidence=%.2f)", domain, best_pattern, confidence)
 
     # Cache

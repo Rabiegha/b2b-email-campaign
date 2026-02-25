@@ -14,6 +14,9 @@ build/
 
 # Data (generated)
 data/app.db
+data/task_progress.json
+data/send_progress.json
+data/cache/
 logs/app.log
 
 # OS

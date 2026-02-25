@@ -114,6 +114,38 @@ def get_all_messages(conn):
     return conn.execute("SELECT * FROM messages ORDER BY id").fetchall()
 
 
+def update_prospect(conn, prospect_id, firstname, lastname, company, company_key):
+    conn.execute(
+        "UPDATE prospects SET firstname=?, lastname=?, company=?, company_key=? WHERE id=?",
+        (firstname, lastname, company, company_key, prospect_id),
+    )
+
+
+def delete_prospect(conn, prospect_id):
+    conn.execute("DELETE FROM email_suggestions WHERE prospect_id=?", (prospect_id,))
+    conn.execute("DELETE FROM prospects WHERE id=?", (prospect_id,))
+
+
+def delete_all_prospects(conn):
+    conn.execute("DELETE FROM email_suggestions")
+    conn.execute("DELETE FROM prospects")
+
+
+def update_message(conn, message_id, company, company_key, subject, body_text):
+    conn.execute(
+        "UPDATE messages SET company=?, company_key=?, subject=?, body_text=? WHERE id=?",
+        (company, company_key, subject, body_text, message_id),
+    )
+
+
+def delete_message(conn, message_id):
+    conn.execute("DELETE FROM messages WHERE id=?", (message_id,))
+
+
+def delete_all_messages(conn):
+    conn.execute("DELETE FROM messages")
+
+
 def get_prospects_without_suggestion(conn, limit=None):
     q = """
         SELECT p.* FROM prospects p
@@ -156,13 +188,59 @@ def upsert_email_suggestion(conn, prospect_id, domain, pattern,
         )
 
 
-def get_email_suggestions(conn):
-    return conn.execute("""
+def get_email_suggestions(conn, status_filter=None):
+    q = """
         SELECT es.*, p.firstname, p.lastname, p.company
         FROM email_suggestions es
         JOIN prospects p ON p.id = es.prospect_id
-        ORDER BY es.id
+    """
+    params = []
+    if status_filter:
+        q += " WHERE es.status = ?"
+        params.append(status_filter)
+    q += " ORDER BY es.id"
+    return conn.execute(q, params).fetchall()
+
+
+def get_prospects_without_any_email(conn):
+    """Prospects with no suggestion or suggestion with status NOT_FOUND."""
+    return conn.execute("""
+        SELECT p.*, es.id as suggestion_id, es.suggested_email, es.status as es_status,
+               es.domain, es.pattern
+        FROM prospects p
+        LEFT JOIN email_suggestions es ON es.prospect_id = p.id
+        WHERE es.id IS NULL OR es.status = 'NOT_FOUND' OR es.suggested_email IS NULL
+              OR es.suggested_email = ''
+        ORDER BY p.company, p.lastname
     """).fetchall()
+
+
+def update_email_suggestion(conn, suggestion_id, suggested_email, domain, pattern, status, confidence=None):
+    """Update an existing email suggestion."""
+    from datetime import datetime
+    now = datetime.utcnow().isoformat()
+    if confidence is not None:
+        conn.execute(
+            """UPDATE email_suggestions
+               SET suggested_email=?, domain=?, pattern=?, status=?, confidence_score=?, created_at=?
+               WHERE id=?""",
+            (suggested_email, domain, pattern, status, confidence, now, suggestion_id),
+        )
+    else:
+        conn.execute(
+            """UPDATE email_suggestions
+               SET suggested_email=?, domain=?, pattern=?, status=?, created_at=?
+               WHERE id=?""",
+            (suggested_email, domain, pattern, status, now, suggestion_id),
+        )
+
+
+def delete_email_suggestion(conn, suggestion_id):
+    conn.execute("DELETE FROM email_suggestions WHERE id=?", (suggestion_id,))
+
+
+def delete_all_email_suggestions(conn):
+    conn.execute("DELETE FROM email_suggestions")
 
 
 def clear_outbox(conn):

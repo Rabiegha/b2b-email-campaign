@@ -16,6 +16,15 @@ PROSPECT_SYNONYMS = {
     "company": ["company", "entreprise", "societe", "société", "organization", "organisation", "compagnie"],
 }
 
+# Extended prospect synonyms (with optional email column for direct-send mode)
+PROSPECT_WITH_EMAIL_SYNONYMS = {
+    "firstname": ["firstname", "prenom", "first_name", "prénom", "first"],
+    "lastname": ["lastname", "nom", "last_name", "family_name", "last", "nom_de_famille"],
+    "company": ["company", "entreprise", "societe", "société", "organization", "organisation", "compagnie"],
+    "email": ["email", "e-mail", "mail", "adresse_email", "adresse_mail",
+              "email_address", "courriel", "adresse"],
+}
+
 MESSAGE_SYNONYMS = {
     "company": ["company", "entreprise", "societe", "société", "organization", "organisation", "compagnie"],
     "subject": ["subject", "objet", "sujet", "titre", "title"],
@@ -74,6 +83,20 @@ def detect_prospect_columns(df: pd.DataFrame) -> dict[str, str | None]:
         "firstname": _detect_column(cols, PROSPECT_SYNONYMS["firstname"]),
         "lastname": _detect_column(cols, PROSPECT_SYNONYMS["lastname"]),
         "company": _detect_column(cols, PROSPECT_SYNONYMS["company"]),
+    }
+
+
+def detect_prospect_with_email_columns(df: pd.DataFrame) -> dict[str, str | None]:
+    """
+    Auto-detect prospect column mapping WITH optional email column.
+    Returns {canonical_name: original_column_name_or_None}.
+    """
+    cols = list(df.columns)
+    return {
+        "firstname": _detect_column(cols, PROSPECT_WITH_EMAIL_SYNONYMS["firstname"]),
+        "lastname": _detect_column(cols, PROSPECT_WITH_EMAIL_SYNONYMS["lastname"]),
+        "company": _detect_column(cols, PROSPECT_WITH_EMAIL_SYNONYMS["company"]),
+        "email": _detect_column(cols, PROSPECT_WITH_EMAIL_SYNONYMS["email"]),
     }
 
 
